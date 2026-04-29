@@ -1,0 +1,78 @@
+# discord-ops-alert (Python)
+
+> Python SDK for sending Discord alerts from a backend. Fire-and-forget, webhook or bot mode, zero infra.
+
+`discord-ops-alert` is a small, focused library for one job: pushing "something happened" messages from backend code into a Discord channel without blocking the request and without throwing. It supports two modes — Discord webhooks (one URL per channel, zero permissions, recommended) and bot tokens (one token, many channels, bot identity). Both expose the same `notify(topic=..., message=...)` API.
+
+The Python package is a full mirror of the TypeScript [`discord-ops-alert`](https://www.npmjs.com/package/discord-ops-alert) npm package, with both sync (fire-and-forget via daemon thread) and async (`await notify.async_(...)`) variants.
+
+## Install
+
+```bash
+pip install discord-ops-alert
+# or
+uv add discord-ops-alert
+```
+
+Requires Python 3.11+. Dependencies: `httpx`, `pydantic`.
+
+## API
+
+- `create_notifier(**options)` returns a `Notifier` instance.
+- `notify(topic=..., message=...)` — fire-and-forget, returns `None`, never raises.
+- `await notify.async_(topic=..., message=...)` — awaitable, returns `NotifyResult`, never raises.
+- `NotifyResult` fields: `ok: bool`, `attempts: int`, `message_id: str | None`, `error: str | None`, `skipped: bool`.
+- `DiscordOpsError` with `code` in `ErrorCode` enum: `config_error`, `validation_error`, `unknown_topic`, `network_error`, `rate_limited`, `discord_api_error`, `timeout`.
+- `default_logger` — stdlib logger with `[discord-ops]` prefix and StreamHandler attached.
+- `silent_logger` — no-op logger, useful in tests.
+- `Environment` — literal type: `"development" | "test" | "homologation" | "staging" | "production"`.
+
+## Canonical integration pattern (USE THIS)
+
+```python
+# notify.py — create ONCE at startup, import everywhere
+import os
+from discord_ops_alert import create_notifier
+
+notify = create_notifier(
+    mode="webhook",
+    webhooks={
+        "signup":  os.environ["DISCORD_WEBHOOK_SIGNUP"],
+        "payment": os.environ["DISCORD_WEBHOOK_PAYMENT"],
+        "error":   os.environ["DISCORD_WEBHOOK_ERROR"],
+    },
+    enabled_in=["production"],
+)
+
+# anywhere in usecases — NO await, never blocks, never raises
+notify(topic="signup", message=f"New user: {user.email}")
+```
+
+## Anti-patterns (DO NOT DO)
+
+- Do NOT `await notify.async_(...)` in hot paths unless you need delivery confirmation.
+- Do NOT create `create_notifier(...)` per request. Create once at module scope.
+- Do NOT log or print webhook URLs or bot tokens.
+- Do NOT pass objects to `message`. Must be `str` <= 2000 chars.
+- Do NOT wrap `notify(...)` in try/except — it never raises.
+- Do NOT rely on message delivery in `development` or `test`.
+
+## Environment filtering
+
+Reads `STAGE` env var, compares against `enabled_in`. Silent no-op if not matched.
+
+## Retry behavior
+
+- Default: 3 attempts, exponential backoff with full jitter, base 250ms, cap 5s.
+- Retries on: HTTP 429, 5xx, timeouts, OSError.
+- Respects Discord `Retry-After` header and `retry_after` JSON field.
+- On exhaustion: typed DiscordOpsError — `rate_limited`, `discord_api_error`, `timeout`, `network_error`.
+
+## Differences from the TypeScript package
+
+- `async_()` instead of `.async()` (Python keyword conflict).
+- Fire-and-forget uses daemon thread instead of Promise swallowing.
+- No `AbortSignal` support.
+- No `awaitByDefault` option.
+- Environment read from `STAGE` instead of `NODE_ENV`.
+- `enabled_in` defaults to `[]` (always fires) instead of `["production"]`.
