@@ -1,6 +1,7 @@
 """Error types for discord-ops-alert."""
 
 from __future__ import annotations
+
 from enum import StrEnum
 
 
@@ -15,6 +16,12 @@ class ErrorCode(StrEnum):
 
 
 class RetryableError(Exception):
+    """Raised by the HTTP layer to signal a retryable failure.
+
+    Wraps the HTTP status code and response body so the retry engine can
+    make an informed decision without coupling to httpx.
+    """
+
     def __init__(self, status_code: int, body: str = "", retry_after_ms: int | None = None) -> None:
         super().__init__(f"HTTP {status_code}: {body}")
         self.status_code = status_code
@@ -23,7 +30,11 @@ class RetryableError(Exception):
 
 
 class DiscordOpsError(Exception):
-    """Exception raised by the SDK. async_() returns NotifyResult(ok=False), never raises."""
+    """Exception raised by the SDK.
+
+    In fire-and-forget mode these never leak out — they are logged.
+    When using async_() they are returned as NotifyResult(ok=False), never raised.
+    """
 
     def __init__(
         self,
@@ -44,4 +55,7 @@ class DiscordOpsError(Exception):
         return f"[{self.code}] {super().__str__()}"
 
     def __repr__(self) -> str:
-        return f"DiscordOpsError(code={self.code!r}, message={super().__str__()!r}, status={self.status!r})"
+        return (
+            f"DiscordOpsError(code={self.code!r}, message={super().__str__()!r}, "
+            f"status={self.status!r})"
+        )
