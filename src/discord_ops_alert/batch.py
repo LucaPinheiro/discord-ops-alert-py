@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import threading
 from typing import TYPE_CHECKING, Any
 
@@ -53,7 +52,7 @@ class BatchNotifier:
         """Drain all pending topics immediately. Returns last NotifyResult."""
         topics_to_fire: list[str] = []
         with self._lock:
-            for topic, timer in list(self._timers.items()):
+            for _, timer in list(self._timers.items()):
                 timer.cancel()
             topics_to_fire = list(self._pending.keys())
             self._timers.clear()
@@ -69,6 +68,7 @@ class BatchNotifier:
         if last_result is None:
             # Nothing was pending — return a dummy ok result
             from discord_ops_alert.types import NotifyResult
+
             return NotifyResult(ok=True, attempts=0)
 
         return last_result
