@@ -23,8 +23,8 @@ class BatchNotifier:
         self._notifier = notifier
         self._window_ms = window_ms
         self._lock = threading.Lock()
-        # topic -> list of messages
-        self._pending: dict[str, list[str]] = {}
+        # topic -> (messages, kwargs)
+        self._pending: dict[str, tuple[list[str], dict[str, Any]]] = {}
         # topic -> Timer
         self._timers: dict[str, threading.Timer] = {}
 
@@ -32,55 +32,57 @@ class BatchNotifier:
         """Fire-and-forget: add message to batch, starts window if first for topic."""
         with self._lock:
             if topic not in self._pending:
-                self._pending[topic] = []
+                self._pending[topic] = ([], kwargs)
                 timer = threading.Timer(
                     self._window_ms / 1000.0,
                     self._fire,
-                    kwargs={"topic": topic, **{k: v for k, v in kwargs.items()}},
+                    kwargs={"topic": topic},
                 )
                 self._timers[topic] = timer
                 timer.daemon = True
                 timer.start()
-            self._pending[topic].append(message)
+            self._pending[topic][0].append(message)
 
     async def async_(self, *, topic: str, message: str, **kwargs: Any) -> "NotifyResult":
-        """Async variant: same as __call__ but returns a NotifyResult after flush."""
+        """Async variant: adds message to batch then flushes all pending topics.
+
+        Note: flush() drains ALL topics, not just the one just added.
+        """
         self(topic=topic, message=message, **kwargs)
         return await self.flush()
 
     async def flush(self) -> "NotifyResult":
         """Drain all pending topics immediately. Returns last NotifyResult."""
-        topics_to_fire: list[str] = []
         with self._lock:
-            for _, timer in list(self._timers.items()):
+            for timer in self._timers.values():
                 timer.cancel()
-            topics_to_fire = list(self._pending.keys())
+            snapshot = dict(self._pending)
+            self._pending.clear()
             self._timers.clear()
 
         last_result: "NotifyResult | None" = None
-        for topic in topics_to_fire:
-            with self._lock:
-                messages = self._pending.pop(topic, [])
+        for topic, (messages, kwargs) in snapshot.items():
             if messages:
                 batched = _build_batched_message(messages)
-                last_result = await self._notifier.async_(topic=topic, message=batched)
+                last_result = await self._notifier.async_(topic=topic, message=batched, **kwargs)
 
         if last_result is None:
-            # Nothing was pending — return a dummy ok result
             from discord_ops_alert.types import NotifyResult
 
             return NotifyResult(ok=True, attempts=0)
 
         return last_result
 
-    def _fire(self, *, topic: str, **kwargs: Any) -> None:
+    def _fire(self, *, topic: str) -> None:
         """Called by Timer when window closes — sends the batch."""
         with self._lock:
-            messages = self._pending.pop(topic, [])
+            entry = self._pending.pop(topic, None)
             self._timers.pop(topic, None)
-        if messages:
-            batched = _build_batched_message(messages)
-            self._notifier(topic=topic, message=batched, **kwargs)
+        if entry:
+            messages, kwargs = entry
+            if messages:
+                batched = _build_batched_message(messages)
+                self._notifier(topic=topic, message=batched, **kwargs)
 
 
 def _build_batched_message(messages: list[str]) -> str:
